@@ -1,0 +1,21 @@
+name: Build
+on:
+  pull_request:
+    branches: [main]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-pull-request
+  cancel-in-progress: true
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v7
+      - name: Check the shell scripts
+        run: shellcheck --severity=warning ./*.sh
+      - name: Check the pool manager compiles
+        run: python3 -m py_compile pool.py
+      - name: Check the example config is valid JSON
+        run: jq empty config.example.json
