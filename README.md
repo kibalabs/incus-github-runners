@@ -90,7 +90,11 @@ Runners in the Default group are only offered to private repositories. Keep publ
 
 ## Sizing
 
-Every VM runs inside `incus.service`, capped at `vmMemoryLimit` with no swap. A busy job VM fills its memory with file cache, so `jobVmCount` × job VM memory + cache VM memory (per org) must stay under the cap; the setup script checks this. If VMs still reach the cap, the kernel kills a job VM (the pool marks them as first to go) rather than the cache VM or anything on the host, and that job fails. Image builds also briefly start a 4GiB build VM inside the cap.
+Every VM runs inside `incus.service`, capped at `vmMemoryLimit` with no swap. A busy job VM fills its memory with file cache, and the cache VM keeps its memory full with BuildKit's file cache, so the setup script checks that every VM at full memory fits under the cap: `jobVmCount` × job VM memory, plus each org's cache VM, plus the 4GiB VM the weekly image build starts, plus 256MiB per VM and 512MiB for Incus itself. The example config (4 × 3GiB job VMs and a 6GiB cache VM) needs exactly 24GiB.
+
+If VMs still reach the cap, the kernel kills a job VM (the pool marks them as first to go) rather than the cache VM or anything on the host, and that job fails. The setup script sets `OOMPolicy=continue` on `incus.service`, so the other VMs keep running; systemd's default would stop all of Incus.
+
+The cache VM's memory is only a page cache for BuildKit's layers, which live on its disk, so a smaller cache VM costs a little speed rather than cache hits.
 
 ## Operating
 

@@ -11,6 +11,10 @@ CONFIG_DIR="$(cd "${1:-$RUNNERS_DIR}" && pwd)"
 CONFIG="$CONFIG_DIR/config.json"
 PRIVATE_KEY="$CONFIG_DIR/secrets/github-app.pem"
 BASE_IMAGE="images:ubuntu/24.04/cloud"
+BUILD_VM_MEMORY="4GiB"
+# Each VM's QEMU process needs some memory beyond the guest's, and incusd and dnsmasq run inside the same cap.
+VM_OVERHEAD="256MiB"
+DAEMON_OVERHEAD="512MiB"
 
 fail() {
   echo "$1" >&2
@@ -97,6 +101,15 @@ setup_profile() {
   if ! incus profile show "$name" >/dev/null 2>&1; then
     incus profile create "$name"
   fi
+  # A running VM can give memory back but can't grow past what it booted with, so stop the profile's VMs when its memory grows.
+  local currentMemory
+  currentMemory="$(incus profile get "$name" limits.memory)"
+  if [[ -n "$currentMemory" ]] && (( $(to_bytes "$memory") > $(to_bytes "$currentMemory") )); then
+    incus list --format json | jq -r --arg profile "$name" '.[] | select(.status == "Running" and (.profiles | index($profile))) | .name' | while read -r vm; do
+      echo "Stopping $vm to grow its memory from $currentMemory to $memory"
+      incus stop --force "$vm"
+    done
+  fi
   incus profile edit "$name" <<EOF
 config:
   boot.autostart: "$autostart"
@@ -149,10 +162,11 @@ NAME="$(config .name)"
 [[ "$NAME" =~ ^[a-z][a-z0-9]{0,9}$ ]] || fail "name in $CONFIG must be 1-10 lowercase letters or digits, starting with a letter (it prefixes network interfaces)"
 SUBNET_PREFIX="$(config .subnetPrefix)"
 [[ "$SUBNET_PREFIX" =~ ^[0-9]{1,3}\.[0-9]{1,3}$ ]] || fail "subnetPrefix in $CONFIG must be the first two parts of an IPv4 address, e.g. 10.77"
-neededMemory="$(( ($(config '[.orgs[].jobVmCount] | add') * $(to_bytes "$(config .jobVm.memory)")) + ($(config '.orgs | length') * $(to_bytes "$(config .cacheVm.memory)")) ))"
+vmCount="$(( $(config '[.orgs[].jobVmCount] | add') + $(config '.orgs | length') + 1 ))"
+neededMemory="$(( $(config '[.orgs[].jobVmCount] | add') * $(to_bytes "$(config .jobVm.memory)") + $(config '.orgs | length') * $(to_bytes "$(config .cacheVm.memory)") + $(to_bytes "$BUILD_VM_MEMORY") + vmCount * $(to_bytes "$VM_OVERHEAD") + $(to_bytes "$DAEMON_OVERHEAD") ))"
 vmMemoryLimit="$(to_bytes "$(config .vmMemoryLimit)")"
 hostMemory="$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) * 1024 ))"
-(( neededMemory <= vmMemoryLimit )) || fail "The job VMs and cache VMs need $(numfmt --to=iec-i "$neededMemory")B but vmMemoryLimit is $(config .vmMemoryLimit): lower jobVmCount or the VM memory, or raise vmMemoryLimit"
+(( neededMemory <= vmMemoryLimit )) || fail "All VMs at full memory (job VMs, cache VMs, the $BUILD_VM_MEMORY image build VM, plus $VM_OVERHEAD per VM and $DAEMON_OVERHEAD for Incus) need $(numfmt --to=iec-i "$neededMemory")B but vmMemoryLimit is $(config .vmMemoryLimit): lower jobVmCount or the VM memory, or raise vmMemoryLimit"
 (( vmMemoryLimit < hostMemory )) || fail "vmMemoryLimit ($(config .vmMemoryLimit)) must leave memory for the host, which has $(numfmt --to=iec-i "$hostMemory")B"
 
 UFW_ACTIVE=false
@@ -176,6 +190,15 @@ if [[ "$(cat "$AGENT_PATH_CONF" 2>/dev/null)" != "$agentPathConf" ]]; then
   systemctl daemon-reload
   systemctl restart incus.service
 fi
+# systemd's default OOMPolicy=stop stops all of Incus when the cap kills one VM; continue keeps the other VMs running.
+OOM_POLICY_CONF=/etc/systemd/system/incus.service.d/oom-policy.conf
+oomPolicyConf="[Service]
+OOMPolicy=continue"
+if [[ "$(cat "$OOM_POLICY_CONF" 2>/dev/null)" != "$oomPolicyConf" ]]; then
+  mkdir -p "$(dirname "$OOM_POLICY_CONF")"
+  echo "$oomPolicyConf" >"$OOM_POLICY_CONF"
+  systemctl daemon-reload
+fi
 systemctl enable --now incus.service
 # Every VM runs inside incus.service. Capping it (with no swap) makes a VM get killed when VM memory runs out, instead of the whole host freezing.
 systemctl set-property incus.service MemoryMax="$(config .vmMemoryLimit)" MemorySwapMax=0
@@ -198,7 +221,7 @@ if ! incus storage show "$NAME" >/dev/null 2>&1; then
 fi
 
 setup_network "${NAME}0" 0
-setup_profile "$NAME-build" "${NAME}0" 4 4GiB 10GiB false
+setup_profile "$NAME-build" "${NAME}0" 4 "$BUILD_VM_MEMORY" 10GiB false
 
 orgCount="$(config '.orgs | length')"
 for ((i = 0; i < orgCount; i++)); do
