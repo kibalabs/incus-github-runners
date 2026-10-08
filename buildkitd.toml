@@ -1,0 +1,10 @@
+[grpc]
+  address = ["tcp://0.0.0.0:1234", "unix:///run/buildkit/buildkitd.sock"]
+
+[worker.oci]
+  gc = true
+  maxUsedSpace = "75%"
+  minFreeSpace = "15GB"
+
+[registry."buildkit:5000"]
+  http = true

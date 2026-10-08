@@ -1,0 +1,27 @@
+{
+  "name": "ghr",
+  "githubAppId": null,
+  "runnerLabels": ["self-hosted", "incus"],
+  "runnerGroupId": 1,
+  "subnetPrefix": "10.77",
+  "allowedPrivateDestinations": [],
+  "storagePoolSize": "300GiB",
+  "vmMemoryLimit": "24G",
+  "cacheVm": {
+    "cpus": 8,
+    "memory": "8GiB",
+    "disk": "150GiB"
+  },
+  "jobVm": {
+    "cpus": 4,
+    "memory": "4GiB",
+    "disk": "30GiB"
+  },
+  "orgs": [
+    {
+      "name": "your-org",
+      "networkIndex": 1,
+      "jobVmCount": 4
+    }
+  ]
+}
